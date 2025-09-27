@@ -8,7 +8,11 @@
 ],
 "routes": [
 {
-"src": "/(.*)",
+"src": "/api/webhook",
+"dest": "wave_bot_vercel_code.py"
+},
+{
+"src": "/",
 "dest": "wave_bot_vercel_code.py"
 }
 ]
