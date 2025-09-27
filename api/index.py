@@ -75,7 +75,7 @@ def start_command(update: Update, context: CallbackContext):
             "📋 `/listchannels`\n\n"
             "**የጊዜ ሰሌዳ ማስተዳደሪያ:**\n"
             "⏰ `/schedule` - መልዕክትን በሰዓት ለማዘዝ።\n"
-            "🗒️ `/scheduledposts` - የታዘዙትን ለማየት።\n\n"
+            "🗒️ `/scheduledposts` - የታዘዙትን ለማየትና ለመሰረዝ።\n\n"
             "**ተጨማሪ ትዕዛዞች:**\n"
             "📊 `/stats`\n"
             "ℹ️ `/help` - ይህንን መልዕክት እንደገና ለማየት።")
@@ -151,12 +151,16 @@ def scheduled_posts_command(update: Update, context: CallbackContext):
         update.message.reply_text("🤷‍♂️ ምንም በጊዜ ቀጠሮ የተያዘ መልዕክት የለም።")
         return
 
-    message = "🗒️ **የታዘዙ መልዕክቶች ዝርዝር:**\n"
-    for post in posts:
+    message = "🗒️ **የታዘዙ መልዕክቶች ዝርዝር:**\n\n"
+    keyboard = []
+    for i, post in enumerate(posts):
         post_time_utc = datetime.fromisoformat(post['schedule_time_utc'])
         post_time_local = post_time_utc + timedelta(hours=3) # EAT (UTC+3)
-        message += f"\n- 🕒 **በ `{post_time_local.strftime('%Y-%m-%d %H:%M')}`** ይላካል."
-    update.message.reply_text(message, parse_mode=ParseMode.MARKDOWN)
+        message += f"**{i+1}.** 🕒 `{post_time_local.strftime('%Y-%m-%d %H:%M')}` ላይ ይላካል።\n"
+        keyboard.append([InlineKeyboardButton(f"❌ {i+1}ኛውን ሰርዝ", callback_data=f"cancel_scheduled_{post['schedule_id']}")])
+
+    update.message.reply_text(message, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
+
 
 def process_message(update: Update, context: CallbackContext):
     if not is_admin(update) or not kv: return
@@ -242,12 +246,12 @@ def broadcast_message(context: CallbackContext, message_info: dict):
 
 def button_callback_handler(update: Update, context: CallbackContext):
     query = update.callback_query
-    query.answer()
     user_id = query.from_user.id
     data = query.data
     state = get_user_state(user_id)
     
     if data == "broadcast_now":
+        query.answer()
         if state.get("action") == "confirm_broadcast":
             query.edit_message_text(text="✅ መልዕክቱ አሁኑኑ እየተላከ ነው...")
             broadcast_message(context, state['message_to_send'])
@@ -256,6 +260,7 @@ def button_callback_handler(update: Update, context: CallbackContext):
             query.edit_message_text(text="❌ ጊዜው አልፎበታል። እባክዎ እንደገና ይሞክሩ።")
 
     elif data == "broadcast_schedule":
+        query.answer()
         if state.get("action") == "confirm_broadcast":
             set_user_state(user_id, {"action": "awaiting_schedule_time"})
             query.edit_message_text(
@@ -266,15 +271,20 @@ def button_callback_handler(update: Update, context: CallbackContext):
             query.edit_message_text(text="❌ ጊዜው አልፎበታል። እባክዎ እንደገና ይሞክሩ።")
             
     elif data == "broadcast_cancel":
+        query.answer()
         clear_user_state(user_id)
         query.edit_message_text(text="✅ የመላክ ስራው ተሰርዟል።")
 
     elif data.startswith("delete_"):
+        query.answer(text="ትዕዛዝዎ እየተፈጸመ ነው...", show_alert=False)
         broadcast_id = data.split("_")[1]
         messages_to_delete_json = kv.get(f"broadcast:{broadcast_id}")
         
         if not messages_to_delete_json:
-            query.edit_message_text(text="❌ ይቅርታ፣ ይህ መልዕክት ጊዜው አልፎበታል ወይም ተሰርዟል።")
+            try:
+                query.edit_message_text(text="❌ ይቅርታ፣ ይህ መልዕክት ጊዜው አልፎበታል ወይም ቀድሞ ተሰርዟል።")
+            except Exception:
+                pass # Ignore if editing fails
             return
             
         messages = json.loads(messages_to_delete_json)
@@ -286,8 +296,52 @@ def button_callback_handler(update: Update, context: CallbackContext):
             except Exception as e:
                 logging.error(f"Could not delete message: {e}")
         
-        query.edit_message_text(text=f"🗑️ መልዕክቱ ከ {deleted_count} ቻናሎች ላይ ተሰርዟል።")
+        try:
+            query.edit_message_text(text=f"🗑️ መልዕክቱ ከ {deleted_count} ቻናሎች ላይ ተሰርዟል።")
+        except Exception:
+            context.bot.send_message(
+                chat_id=ADMIN_USER_ID,
+                text=f"🗑️ አንድ መልዕክት ከ {deleted_count} ቻናሎች ላይ እንዲሰረዝ አድርገሃል።"
+            )
         kv.delete(f"broadcast:{broadcast_id}")
+
+    elif data.startswith("cancel_scheduled_"):
+        schedule_id_to_cancel = data.split("_")[2]
+        scheduled_posts_json = kv.get("wavebot:scheduled_posts")
+        posts = json.loads(scheduled_posts_json) if scheduled_posts_json else []
+        
+        post_found = False
+        updated_posts = [p for p in posts if p['schedule_id'] != schedule_id_to_cancel]
+        
+        if len(updated_posts) < len(posts):
+            post_found = True
+
+        if post_found:
+            kv.set("wavebot:scheduled_posts", json.dumps(updated_posts))
+            query.answer("✅ የታዘዘው መልዕክት ተሰርዟል።", show_alert=True)
+            
+            new_message = "🗒️ **የታዘዙ መልዕክቶች ዝርዝር:**\n\n"
+            new_keyboard = []
+            if not updated_posts:
+                new_message = "✅ ስኬታማ! ሁሉም የታዘዙ መልዕክቶች ተሰርዘዋል።"
+            else:
+                for i, post in enumerate(updated_posts):
+                    post_time_utc = datetime.fromisoformat(post['schedule_time_utc'])
+                    post_time_local = post_time_utc + timedelta(hours=3)
+                    new_message += f"**{i+1}.** 🕒 `{post_time_local.strftime('%Y-%m-%d %H:%M')}` ላይ ይላካል።\n"
+                    new_keyboard.append([InlineKeyboardButton(f"❌ {i+1}ኛውን ሰርዝ", callback_data=f"cancel_scheduled_{post['schedule_id']}")])
+            
+            try:
+                query.edit_message_text(text=new_message, reply_markup=InlineKeyboardMarkup(new_keyboard), parse_mode=ParseMode.MARKDOWN)
+            except Exception as e:
+                 logging.error(f"Error editing scheduled posts message: {e}")
+        else:
+            query.answer("🤔 ይቅርታ, ይህ መልዕክት አስቀድሞ ተልኳል ወይም ተሰርዟል።", show_alert=True)
+            try:
+                query.edit_message_text(text="🤷‍♂️ ምንም በጊዜ ቀጠሮ የተያዘ መልዕክት የለም።")
+            except Exception:
+                pass
+
 
 def cron_job_runner():
     scheduled_posts_json = kv.get("wavebot:scheduled_posts")
@@ -347,8 +401,6 @@ def webhook_handler():
 def cron_handler():
     auth_header = request.headers.get('x-vercel-cron-authorization')
     if not auth_header or auth_header != f"Bearer {CRON_SECRET}":
-        # For local testing, you can bypass this check if you want.
-        # But it's crucial for production.
         logging.warning("CRON: Unauthorized access attempt.")
         return "Unauthorized", 401
     
