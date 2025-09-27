@@ -1,0 +1,15 @@
+{
+"version": 2,
+"builds": [
+{
+"src": "wave_bot_vercel_code.py",
+"use": "@vercel/python"
+}
+],
+"routes": [
+{
+"src": "/(.*)",
+"dest": "wave_bot_vercel_code.py"
+}
+]
+}
