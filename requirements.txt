@@ -1,4 +1,3 @@
-python-telegram-bot
-apscheduler
+python-telegram-bot[persistence]
 starlette
 uvicorn
