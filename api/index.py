@@ -220,29 +220,36 @@ def broadcast_message(context: CallbackContext, message_info: dict):
         return
 
     broadcast_id = str(uuid.uuid4())
-    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🗑️ ሁሉንም አጥፋ", callback_data=f"delete_{broadcast_id}")]])
-    
     sent_messages, failed_count = [], 0
+    
     for channel in channels:
         try:
+            # ይህ ክፍል መልዕክቱን ከነሙሉ ይዘቱ (ከነበተኖቹ) ኮፒ ያደርጋል
             sent_msg = context.bot.copy_message(
                 from_chat_id=message_info['chat_id'],
                 message_id=message_info['message_id'],
-                chat_id=channel, 
-                reply_markup=keyboard
+                chat_id=channel
             )
             sent_messages.append({"chat_id": sent_msg.chat.id, "message_id": sent_msg.message_id})
         except Exception as e:
             logging.error(f"Failed to send to {channel}: {e}")
             failed_count += 1
             
-    kv.set(f"broadcast:{broadcast_id}", json.dumps(sent_messages), ex=604800) # Expire in 7 days
-    kv.incr("wavebot:broadcasts")
-    
-    context.bot.send_message(
-        chat_id=ADMIN_USER_ID, 
-        text=f"📡 መልዕክቱ ተልኳል!\n\n✅ ለ {len(sent_messages)} ቻናሎች።\n❌ ለ {failed_count} ቻናሎች አልተላከም።"
-    )
+    if sent_messages:
+        kv.set(f"broadcast:{broadcast_id}", json.dumps(sent_messages), ex=604800) # Expire in 7 days
+        kv.incr("wavebot:broadcasts")
+        
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🗑️ ሁሉንም አጥፋ", callback_data=f"delete_{broadcast_id}")]])
+        text = f"📡 መልዕክቱ ተልኳል!\n\n✅ ለ {len(sent_messages)} ቻናሎች።\n❌ ለ {failed_count} ቻናሎች አልተላከም።"
+        
+        context.bot.send_message(
+            chat_id=ADMIN_USER_ID, 
+            text=text,
+            reply_markup=keyboard
+        )
+    else:
+        text = f"📡 መልዕክቱ አልተላከም!\n\n❌ ለ {failed_count} ቻናሎች መላክ አልተቻለም።"
+        context.bot.send_message(chat_id=ADMIN_USER_ID, text=text)
 
 def button_callback_handler(update: Update, context: CallbackContext):
     query = update.callback_query
@@ -276,15 +283,12 @@ def button_callback_handler(update: Update, context: CallbackContext):
         query.edit_message_text(text="✅ የመላክ ስራው ተሰርዟል።")
 
     elif data.startswith("delete_"):
-        query.answer(text="ትዕዛዝዎ እየተፈጸመ ነው...", show_alert=False)
+        query.answer()
         broadcast_id = data.split("_")[1]
         messages_to_delete_json = kv.get(f"broadcast:{broadcast_id}")
         
         if not messages_to_delete_json:
-            try:
-                query.edit_message_text(text="❌ ይቅርታ፣ ይህ መልዕክት ጊዜው አልፎበታል ወይም ቀድሞ ተሰርዟል።")
-            except Exception:
-                pass # Ignore if editing fails
+            query.edit_message_text(text="❌ ይቅርታ፣ ይህ መልዕክት ጊዜው አልፎበታል ወይም ቀድሞ ተሰርዟል።")
             return
             
         messages = json.loads(messages_to_delete_json)
@@ -296,13 +300,7 @@ def button_callback_handler(update: Update, context: CallbackContext):
             except Exception as e:
                 logging.error(f"Could not delete message: {e}")
         
-        try:
-            query.edit_message_text(text=f"🗑️ መልዕክቱ ከ {deleted_count} ቻናሎች ላይ ተሰርዟል።")
-        except Exception:
-            context.bot.send_message(
-                chat_id=ADMIN_USER_ID,
-                text=f"🗑️ አንድ መልዕክት ከ {deleted_count} ቻናሎች ላይ እንዲሰረዝ አድርገሃል።"
-            )
+        query.edit_message_text(text=f"🗑️ መልዕክቱ ከ {deleted_count} ቻናሎች ላይ ተሰርዟል።")
         kv.delete(f"broadcast:{broadcast_id}")
 
     elif data.startswith("cancel_scheduled_"):
@@ -310,13 +308,9 @@ def button_callback_handler(update: Update, context: CallbackContext):
         scheduled_posts_json = kv.get("wavebot:scheduled_posts")
         posts = json.loads(scheduled_posts_json) if scheduled_posts_json else []
         
-        post_found = False
         updated_posts = [p for p in posts if p['schedule_id'] != schedule_id_to_cancel]
         
         if len(updated_posts) < len(posts):
-            post_found = True
-
-        if post_found:
             kv.set("wavebot:scheduled_posts", json.dumps(updated_posts))
             query.answer("✅ የታዘዘው መልዕክት ተሰርዟል።", show_alert=True)
             
