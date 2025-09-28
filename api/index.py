@@ -44,7 +44,7 @@ def set_user_state(user_id, state_data):
 def clear_user_state(user_id):
     kv.delete(f"state:{user_id}")
     
-def parse_time(time_str: str) -> timedelta or None:
+def parse_relative_time(time_str: str) -> timedelta or None:
     match = re.match(r"(\d+)([mhd])", time_str.lower())
     if not match: return None
     value, unit = int(match.group(1)), match.group(2)
@@ -52,6 +52,67 @@ def parse_time(time_str: str) -> timedelta or None:
     if unit == 'h': return timedelta(hours=value)
     if unit == 'd': return timedelta(days=value)
     return None
+
+def parse_datetime_eat(datetime_str: str) -> datetime or None:
+    now_utc = datetime.utcnow()
+    now_eat = now_utc + timedelta(hours=3)
+    
+    cleaned_str = datetime_str.strip()
+    
+    target_date = now_eat.date()
+    date_provided = False
+
+    date_patterns = [
+        (r"(\d{1,2})/(\d{1,2})/(\d{4})", "%m/%d/%Y"),
+        (r"(\d{4})-(\d{1,2})-(\d{1,2})", "%Y-%m-%d"),
+    ]
+    
+    for pattern, date_format in date_patterns:
+        match = re.search(pattern, cleaned_str)
+        if match:
+            date_str = match.group(0)
+            try:
+                target_date = datetime.strptime(date_str, date_format).date()
+                cleaned_str = cleaned_str.replace(date_str, "").strip()
+                date_provided = True
+                break
+            except ValueError:
+                continue
+
+    if not cleaned_str: return None
+    
+    time_str_cleaned = cleaned_str.lower().replace(" ", "")
+    hour, minute = None, None
+    
+    match_ampm = re.match(r"(\d{1,2}):(\d{2})(am|pm)", time_str_cleaned)
+    if match_ampm:
+        h, m, period = int(match_ampm.group(1)), int(match_ampm.group(2)), match_ampm.group(3)
+        if not (1 <= h <= 12 and 0 <= m <= 59): return None
+        if period == "pm" and h != 12: hour = h + 12
+        elif period == "am" and h == 12: hour = 0
+        else: hour = h
+        minute = m
+    else:
+        match_24h = re.match(r"(\d{1,2}):(\d{2})", time_str_cleaned)
+        if not match_24h: return None
+        h, m = int(match_24h.group(1)), int(match_24h.group(2))
+        if not (0 <= h <= 23 and 0 <= m <= 59): return None
+        hour, minute = h, m
+            
+    if hour is None: return None
+
+    try:
+        schedule_datetime_eat = datetime.combine(target_date, datetime.min.time()).replace(hour=hour, minute=minute)
+    except ValueError:
+        return None
+
+    if not date_provided and schedule_datetime_eat <= now_eat:
+        schedule_datetime_eat += timedelta(days=1)
+    elif schedule_datetime_eat <= now_eat:
+        return None
+
+    return schedule_datetime_eat - timedelta(hours=3)
+
 
 def get_channels() -> list:
     channels_json = kv.get("wavebot:channels")
@@ -61,7 +122,6 @@ def save_channels(channels: list):
     kv.set("wavebot:channels", json.dumps(channels))
     
 def extract_message_data(message):
-    """Extracts all necessary parts of a message for broadcasting."""
     reply_markup_json = message.reply_markup.to_json() if message.reply_markup else None
     return {
         'text': message.text_html,
@@ -100,7 +160,6 @@ def cancel_command(update: Update, context: CallbackContext):
     update.message.reply_text("✅ የጀመርከው ስራ ተሰርዟል።")
 
 def add_channel_command(update: Update, context: CallbackContext):
-    # ... (No changes here)
     if not is_admin(update) or not kv: return
     try:
         channel_name = context.args[0]
@@ -118,7 +177,6 @@ def add_channel_command(update: Update, context: CallbackContext):
         update.message.reply_text("❌ እባክዎ እንዲህ ይጠቀሙ: /addchannel @username")
 
 def remove_channel_command(update: Update, context: CallbackContext):
-    # ... (No changes here)
     if not is_admin(update) or not kv: return
     try:
         channel_name = context.args[0]
@@ -133,7 +191,6 @@ def remove_channel_command(update: Update, context: CallbackContext):
         update.message.reply_text("❌ እባክዎ እንዲህ ይጠቀሙ: /removechannel @username")
 
 def list_channels_command(update: Update, context: CallbackContext):
-    # ... (No changes here)
     if not is_admin(update) or not kv: return
     channels = get_channels()
     if channels:
@@ -143,24 +200,21 @@ def list_channels_command(update: Update, context: CallbackContext):
         update.message.reply_text("🤷‍♂️ ምንም የተመዘገበ ቻናል የለም።")
         
 def stats_command(update: Update, context: CallbackContext):
-    # ... (No changes here)
     if not is_admin(update) or not kv: return
     broadcast_count = kv.get("wavebot:broadcasts") or 0
     update.message.reply_text(f"📊 ስታቲስቲክስ:\n- የተላኩ መልዕክቶች ብዛት: {int(broadcast_count)}")
 
 def schedule_command(update: Update, context: CallbackContext):
-    # ... (No changes here)
     if not is_admin(update): return
     set_user_state(update.effective_user.id, {"action": "awaiting_schedule_time"})
     update.message.reply_text(
-        "👍 መልዕክቱ ከስንት ጊዜ በኋላ ይላክ?\n"
-        "ምሳሌ: `10m` (ለ 10 ደቂቃ), `2h` (ለ 2 ሰዓት)\n\n"
+        "👍 መልዕክቱ መቼ ይላክ?\n"
+        "ምሳሌ: `9/28/2025 1:30 pm`, `10:00`, or `2h`\n\n"
         "ለመሰረዝ /cancel ብለው ይጻፉ።",
         parse_mode=ParseMode.MARKDOWN
     )
 
 def scheduled_posts_command(update: Update, context: CallbackContext):
-    # ... (No changes here)
     if not is_admin(update): return
     scheduled_posts_json = kv.get("wavebot:scheduled_posts")
     posts = json.loads(scheduled_posts_json) if scheduled_posts_json else []
@@ -172,7 +226,7 @@ def scheduled_posts_command(update: Update, context: CallbackContext):
     for i, post in enumerate(posts):
         post_time_utc = datetime.fromisoformat(post['schedule_time_utc'])
         post_time_local = post_time_utc + timedelta(hours=3) # EAT (UTC+3)
-        message += f"**{i+1}.** 🕒 `{post_time_local.strftime('%Y-%m-%d %H:%M')}` ላይ ይላካል።\n"
+        message += f"**{i+1}.** 🕒 `{post_time_local.strftime('%Y-%m-%d %I:%M %p')}` ላይ ይላካል።\n"
         keyboard.append([InlineKeyboardButton(f"❌ {i+1}ኛውን ሰርዝ", callback_data=f"cancel_scheduled_{post['schedule_id']}")])
     update.message.reply_text(message, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
 
@@ -185,11 +239,17 @@ def process_message(update: Update, context: CallbackContext):
 
     if action == "awaiting_schedule_time":
         time_str = update.message.text
-        delay = parse_time(time_str)
-        if delay is None:
-            update.message.reply_text("❌ የተሳሳተ የጊዜ አጻጻፍ! እባክዎ እንዲህ ይጠቀሙ: `10m`, `2h`።", parse_mode=ParseMode.MARKDOWN)
+        future_time = parse_datetime_eat(time_str)
+        
+        if not future_time:
+            delay = parse_relative_time(time_str)
+            if delay:
+                future_time = datetime.utcnow() + delay
+        
+        if not future_time:
+            update.message.reply_text("❌ የተሳሳተ የጊዜ አጻጻፍ! እባክዎ እንዲህ ይጠቀሙ: `9/28/2025 1:30 pm`, `10:00`, or `2h`።", parse_mode=ParseMode.MARKDOWN)
             return
-        future_time = datetime.utcnow() + delay
+
         set_user_state(user_id, {"action": "awaiting_schedule_message", "schedule_time_utc": future_time.isoformat()})
         update.message.reply_text("✅ ጥሩ! አሁን እንዲላክልህ የምትፈልገውን መልዕክት ላክልኝ።")
 
@@ -207,7 +267,6 @@ def process_message(update: Update, context: CallbackContext):
         update.message.reply_text("✅ መልዕክትህ በተሳካ ሁኔታ ለበኋላ እንዲላክ ታዟል።")
 
     else:
-        # Default action: Ask how to broadcast, storing the full message data
         set_user_state(user_id, {
             "action": "confirm_broadcast",
             "message_to_send": extract_message_data(update.message)
@@ -219,14 +278,13 @@ def process_message(update: Update, context: CallbackContext):
 
 
 def broadcast_message(context: CallbackContext, message_data: dict):
-    """Reconstructs and sends the message to all channels."""
     channels = get_channels()
     if not channels:
         context.bot.send_message(chat_id=ADMIN_USER_ID, text="⚠️ ምንም የተመዘገበ ቻናል ስለሌለ መልዕክቱ አልተላከም።")
         return
 
     broadcast_id = str(uuid.uuid4())
-    sent_messages, failed_count = [], 0
+    sent_messages, failed_channels = [], []
     
     reply_markup = None
     if message_data.get('reply_markup_json'):
@@ -251,20 +309,29 @@ def broadcast_message(context: CallbackContext, message_data: dict):
                 sent_messages.append({"chat_id": sent_msg.chat.id, "message_id": sent_msg.message_id})
             else:
                 logging.warning(f"Message type not supported for channel {channel}")
-                failed_count += 1
+                failed_channels.append(channel)
         except Exception as e:
             logging.error(f"Failed to send to {channel}: {e}")
-            failed_count += 1
+            failed_channels.append(channel)
             
     if sent_messages:
         kv.set(f"broadcast:{broadcast_id}", json.dumps(sent_messages), ex=604800)
         kv.incr("wavebot:broadcasts")
         keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🗑️ ሁሉንም አጥፋ", callback_data=f"delete_{broadcast_id}")]])
-        text = f"📡 መልዕክቱ ተልኳል!\n\n✅ ለ {len(sent_messages)} ቻናሎች።\n❌ ለ {failed_count} ቻናሎች አልተላከም።"
-        context.bot.send_message(chat_id=ADMIN_USER_ID, text=text, reply_markup=keyboard)
+        
+        text = f"📡 **መልዕክቱ ተልኳል!**\n\n✅ ለ `{len(sent_messages)}` ቻናሎች።"
+        if failed_channels:
+            text += f"\n❌ ለ `{len(failed_channels)}` ቻናሎች አልተላከም።"
+            text += "\n\n**ያልተላከባቸው ዝርዝር:**\n" + "\n".join(f"- `{ch}`" for ch in failed_channels)
+
+        context.bot.send_message(chat_id=ADMIN_USER_ID, text=text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
     else:
-        text = f"📡 መልዕክቱ አልተላከም!\n\n❌ ለ {failed_count} ቻናሎች መላክ አልተቻለም።"
-        context.bot.send_message(chat_id=ADMIN_USER_ID, text=text)
+        text = f"📡 **መልዕክቱ አልተላከም!**"
+        if failed_channels:
+             text += f"\n\n❌ ለ `{len(failed_channels)}` ቻናሎች መላክ አልተቻለም።"
+             text += "\n\n**ያልተላከባቸው ዝርዝር:**\n" + "\n".join(f"- `{ch}`" for ch in failed_channels)
+        context.bot.send_message(chat_id=ADMIN_USER_ID, text=text, parse_mode=ParseMode.MARKDOWN)
+
 
 def button_callback_handler(update: Update, context: CallbackContext):
     query = update.callback_query
@@ -285,7 +352,10 @@ def button_callback_handler(update: Update, context: CallbackContext):
         query.answer()
         if state.get("action") == "confirm_broadcast":
             set_user_state(user_id, {"action": "awaiting_schedule_time"})
-            query.edit_message_text(text="👍 መልዕክቱ ከስንት ጊዜ በኋላ ይላክ?\nምሳሌ: `10m`, `2h`", parse_mode=ParseMode.MARKDOWN)
+            query.edit_message_text(
+                text="👍 መልዕክቱ መቼ ይላክ?\nምሳሌ: `9/28/2025 1:30 pm`, `10:00`, or `2h`",
+                parse_mode=ParseMode.MARKDOWN
+            )
         else:
             query.edit_message_text(text="❌ ጊዜው አልፎበታል። እባክዎ እንደገና ይሞክሩ።")
             
@@ -300,7 +370,7 @@ def button_callback_handler(update: Update, context: CallbackContext):
         messages_to_delete_json = kv.get(f"broadcast:{broadcast_id}")
         
         if not messages_to_delete_json:
-            query.edit_message_text(text="❌ ይቅርታ፣ ይህ መልዕክት ጊዜው አልፎበታል ወይም ቀድሞ ተሰርዟል።")
+            query.edit_message_text(text="❌ ይቅርታ፣ ይህ መልዕክት ጊዜው አልፎበታል ወይም ቀድሞ ተሰрዟል።")
             return
             
         messages = json.loads(messages_to_delete_json)
@@ -333,7 +403,7 @@ def button_callback_handler(update: Update, context: CallbackContext):
                 for i, post in enumerate(updated_posts):
                     post_time_utc = datetime.fromisoformat(post['schedule_time_utc'])
                     post_time_local = post_time_utc + timedelta(hours=3)
-                    new_message += f"**{i+1}.** 🕒 `{post_time_local.strftime('%Y-%m-%d %H:%M')}` ላይ ይላካል።\n"
+                    new_message += f"**{i+1}.** 🕒 `{post_time_local.strftime('%Y-%m-%d %I:%M %p')}` ላይ ይላካል።\n"
                     new_keyboard.append([InlineKeyboardButton(f"❌ {i+1}ኛውን ሰርዝ", callback_data=f"cancel_scheduled_{post['schedule_id']}")])
             try:
                 query.edit_message_text(text=new_message, reply_markup=InlineKeyboardMarkup(new_keyboard), parse_mode=ParseMode.MARKDOWN)
