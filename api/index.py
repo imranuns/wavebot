@@ -145,12 +145,16 @@ def start_command(update: Update, context: CallbackContext):
             "➕ `/addchannel @username`\n"
             "➖ `/removechannel @username`\n"
             "📋 `/listchannels`\n\n"
+            "**Watermark (የምርት ምልክት):**\n"
+            "✍️ `/set_watermark ጽሑፍ`\n"
+            "👀 `/view_watermark`\n"
+            "🗑️ `/remove_watermark`\n\n"
             "**የጊዜ ሰሌዳ ማስተዳደሪያ:**\n"
-            "⏰ `/schedule` - መልዕክትን በሰዓት ለማዘዝ።\n"
-            "🗒️ `/scheduledposts` - የታዘዙትን ለማየትና ለመሰረዝ።\n\n"
+            "⏰ `/schedule`\n"
+            "🗒️ `/scheduledposts`\n\n"
             "**ተጨማሪ ትዕዛዞች:**\n"
             "📊 `/stats`\n"
-            "ℹ️ `/help` - ይህንን መልዕክት እንደገና ለማየት።")
+            "ℹ️ `/help`")
            
     update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
 
@@ -203,6 +207,31 @@ def stats_command(update: Update, context: CallbackContext):
     if not is_admin(update) or not kv: return
     broadcast_count = kv.get("wavebot:broadcasts") or 0
     update.message.reply_text(f"📊 ስታቲስቲክስ:\n- የተላኩ መልዕክቶች ብዛት: {int(broadcast_count)}")
+
+def set_watermark_command(update: Update, context: CallbackContext):
+    if not is_admin(update) or not kv: return
+    if not context.args:
+        update.message.reply_text("❌ እባክዎ እንዲህ ይጠቀሙ: /set_watermark የእርስዎ ጽሑፍ እዚህ")
+        return
+    watermark_text = " ".join(context.args)
+    kv.set("wavebot:watermark", watermark_text)
+    update.message.reply_text(f"✅ Watermark በተሳካ ሁኔታ ተቀምጧል:\n\n`{watermark_text}`", parse_mode=ParseMode.MARKDOWN)
+
+def view_watermark_command(update: Update, context: CallbackContext):
+    if not is_admin(update) or not kv: return
+    watermark = kv.get("wavebot:watermark")
+    if watermark:
+        update.message.reply_text(f"👀 አሁን ያለው Watermark:\n\n`{watermark.decode('utf-8')}`", parse_mode=ParseMode.MARKDOWN)
+    else:
+        update.message.reply_text("🤷‍♂️ ምንም የተቀመጠ Watermark የለም።")
+
+def remove_watermark_command(update: Update, context: CallbackContext):
+    if not is_admin(update) or not kv: return
+    if kv.exists("wavebot:watermark"):
+        kv.delete("wavebot:watermark")
+        update.message.reply_text("🗑️ Watermark በተሳካ ሁኔታ ተወግዷል።")
+    else:
+        update.message.reply_text("🤷‍♂️ ምንም የተቀመጠ Watermark የለም።")
 
 def schedule_command(update: Update, context: CallbackContext):
     if not is_admin(update): return
@@ -283,6 +312,22 @@ def broadcast_message(context: CallbackContext, message_data: dict):
         context.bot.send_message(chat_id=ADMIN_USER_ID, text="⚠️ ምንም የተመዘገበ ቻናል ስለሌለ መልዕክቱ አልተላከም።")
         return
 
+    # --- Apply Watermark ---
+    watermark_bytes = kv.get("wavebot:watermark")
+    if watermark_bytes:
+        watermark_text = f"\n\n{watermark_bytes.decode('utf-8')}"
+        
+        # We need to handle HTML entities in the watermark
+        # A simple replacement, more complex parsing might be needed for full support
+        watermark_text_html = watermark_text.replace("<", "&lt;").replace(">", "&gt;").replace("&", "&amp;")
+
+        if message_data['caption']:
+            message_data['caption'] += watermark_text_html
+        elif message_data['text']:
+             message_data['text'] += watermark_text_html
+        else: # For media with no caption
+            message_data['caption'] = watermark_text_html.strip()
+
     broadcast_id = str(uuid.uuid4())
     sent_messages, failed_channels = [], []
     
@@ -315,7 +360,7 @@ def broadcast_message(context: CallbackContext, message_data: dict):
             failed_channels.append(channel)
             
     if sent_messages:
-        kv.set(f"broadcast:{broadcast_id}", json.dumps(sent_messages), ex=604800)
+        kv.set(f"broadcast:{broadcast_id}", json.dumps(sent_messages), ex=604800) # Keep for 7 days
         kv.incr("wavebot:broadcasts")
         keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🗑️ ሁሉንም አጥፋ", callback_data=f"delete_{broadcast_id}")]])
         
@@ -452,6 +497,9 @@ dispatcher.add_handler(CommandHandler("listchannels", list_channels_command, fil
 dispatcher.add_handler(CommandHandler("stats", stats_command, filters=Filters.private))
 dispatcher.add_handler(CommandHandler("schedule", schedule_command, filters=Filters.private))
 dispatcher.add_handler(CommandHandler("scheduledposts", scheduled_posts_command, filters=Filters.private))
+dispatcher.add_handler(CommandHandler("set_watermark", set_watermark_command, filters=Filters.private))
+dispatcher.add_handler(CommandHandler("view_watermark", view_watermark_command, filters=Filters.private))
+dispatcher.add_handler(CommandHandler("remove_watermark", remove_watermark_command, filters=Filters.private))
 dispatcher.add_handler(CallbackQueryHandler(button_callback_handler))
 dispatcher.add_handler(MessageHandler(Filters.private & ~Filters.command, process_message))
 
